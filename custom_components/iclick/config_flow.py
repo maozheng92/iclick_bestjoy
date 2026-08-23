@@ -45,42 +45,48 @@ class BestjoyLoginConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             user_input[CONF_PASSWORD],
                             user_input[CONF_MAC]
                         )
-                        
-                        if device_data:
-                            # 将设备数据存储在user_input中
-                            user_input[DATA_DEVICE_DATA] = device_data["devices"]
-                            # 初始化目标ip信息  {"mac": "", "ip":"", "room_name":""}
-                            input_mac_ip_info = device_data[DATA_IP_INFO]
-                            user_input[CONF_HOST] = input_mac_ip_info["ip"]
-                            user_input[CONF_PORT] = DEFAULT_PORT
-                            # 使用飞碟所在房间
-                            user_input[CONF_AREA] = input_mac_ip_info["room_name"]
 
-
-#                             # 遍历 hub_ip_infos 列表
-#                             for item in device_data[DATA_HUB_IP_INFOS]:
-#                                 # 检查当前元素的 mac 是否等于input_mac
-#                                 if item.get("mac") == input_mac:
-#                                     current_hub_ip_info = item
-#                                     break  # 找到后退出循环
-
-                            # 测试TCP连接
-                            from .client import BestjoyClient
-                            client = BestjoyClient(
-                                user_input[CONF_HOST],
-                                user_input[CONF_PORT],
-                                user_input[CONF_MAC]
-                            )
-                            
-                            if await client.async_test_connection():
-                                return self.async_create_entry(
-                                    title=f"iCLICK_Hub_{user_input[CONF_MAC]}@{user_input[CONF_HOST]}",
-                                    data=user_input
-                                )
-                            else:
-                                errors["base"] = ERROR_CONNECTION_FAILED
-                        else:
+                        if not device_data:
                             errors["base"] = ERROR_DEVICE_DATA
+                        else:
+                            devices = device_data.get("devices")
+                            input_mac_ip_info = device_data.get(DATA_IP_INFO)
+                            if not isinstance(devices, list) or not isinstance(input_mac_ip_info, dict):
+                                _LOGGER.error(
+                                    "iCLICK API result missing devices/ip_info: %s",
+                                    device_data,
+                                )
+                                errors["base"] = ERROR_DEVICE_DATA
+                            elif not input_mac_ip_info.get("ip"):
+                                _LOGGER.error(
+                                    "iCLICK API ip_info missing ip: %s",
+                                    input_mac_ip_info,
+                                )
+                                errors["base"] = ERROR_DEVICE_DATA
+                            else:
+                                # 将设备数据存储在user_input中
+                                user_input[DATA_DEVICE_DATA] = devices
+                                # 初始化目标ip信息  {"mac": "", "ip":"", "room_name":""}
+                                user_input[CONF_HOST] = input_mac_ip_info["ip"]
+                                user_input[CONF_PORT] = DEFAULT_PORT
+                                # 使用飞碟所在房间
+                                user_input[CONF_AREA] = input_mac_ip_info.get(
+                                    "room_name", ""
+                                )
+
+                                # 测试TCP连接
+                                client = BestjoyClient(
+                                    user_input[CONF_HOST],
+                                    user_input[CONF_PORT],
+                                    user_input[CONF_MAC]
+                                )
+
+                                if await client.async_test_connection():
+                                    return self.async_create_entry(
+                                        title=f"iCLICK_Hub_{user_input[CONF_MAC]}@{user_input[CONF_HOST]}",
+                                        data=user_input
+                                    )
+                                errors["base"] = ERROR_CONNECTION_FAILED
             except ValueError:
                 errors["base"] = ERROR_INVALID_IP
             except Exception as e:
@@ -116,19 +122,64 @@ class BestjoyLoginConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         payload = {
             "jsonrpc": "2.0",
             "method": "getdata_v2",
-            "params": [account, password, mac]
+            "params": [account, password, mac],
+            "id": 1,
         }
-        
-        async with aiohttp.ClientSession() as session:
+
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
-                async with session.post(API_URL, json=payload, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        _LOGGER.debug(f"iCLICK API request _get_device_data: {response}")
-                        return data.get("result", {})
-                    else:
-                        _LOGGER.error(f"iCLICK API request failed with status {response.status}")
+                async with session.post(API_URL, json=payload) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        _LOGGER.error(
+                            "iCLICK API request failed with status %s: %s",
+                            response.status,
+                            body[:500],
+                        )
+                        return {}
+
+                    if not body or not body.strip():
+                        _LOGGER.error(
+                            "iCLICK API returned empty body (status %s)",
+                            response.status,
+                        )
+                        return {}
+
+                    try:
+                        data = json.loads(body)
+                    except json.JSONDecodeError as err:
+                        _LOGGER.error(
+                            "iCLICK API returned invalid JSON: %s; body=%s",
+                            err,
+                            body[:500],
+                        )
+                        return {}
+
+                    # 云端偶发返回 JSON null，或 result 显式为 null
+                    if not isinstance(data, dict):
+                        _LOGGER.error(
+                            "iCLICK API response is not an object: %r",
+                            data,
+                        )
+                        return {}
+
+                    if data.get("error"):
+                        _LOGGER.error("iCLICK API returned error: %s", data["error"])
+                        return {}
+
+                    result = data.get("result")
+                    if not isinstance(result, dict):
+                        _LOGGER.error(
+                            "iCLICK API missing/invalid result: %r (full=%s)",
+                            result,
+                            body[:500],
+                        )
+                        return {}
+
+                    _LOGGER.debug("iCLICK API getdata_v2 result keys: %s", list(result))
+                    return result
             except Exception as e:
-                _LOGGER.error(f"iCLICK API request exception: {str(e)}")
-        
+                _LOGGER.error("iCLICK API request exception: %s", e)
+
         return {}
