@@ -3,8 +3,9 @@
   "name": "iCLICK X",
   "version": "1.5.0",
   "config_flow": true,
-  "documentation": "https://github.com/DS202208/iclick_bestjoy",
-  "codeowners": ["@ds"],
+  "documentation": "https://github.com/maozheng92/iclick_bestjoy",
+  "issue_tracker": "https://github.com/maozheng92/iclick_bestjoy/issues",
+  "codeowners": ["@maozheng92"],
   "requirements": ["aiohttp"],
   "iot_class": "local_polling"
 }

@@ -6,16 +6,25 @@ iCLICK&BESTJOY LFO integration is an integrated component of Home Assistant supp
 
 The iCLICK&BESTJOY LFO Hub acts as a multimedia hub that receives TCP commands from Home Assistant and by automation send infrared, BLE, RF433, and RF315 signals for controlling audio/video devices.
 
-## installation
+## Installation
 
 > Home Assistant version requirement:
 >
 > - Core $\geq$ 2024.4.4
 > - Operating System $\geq$ 13.0
 
-### Method 1：Manually installation via[Filebrower](https://github.com/alexbelgium/hassio-addons/tree/master/filebrowser) / [Samba](https://github.com/home-assistant/addons/tree/master/samba) 
+### Method 1: Install with HACS
 
-Download and copy `custom_components/iclick` folder to `config/custom_components` folder in your Home Assistant.
+1. Open **HACS** → **Integrations** → menu (⋮) → **Custom repositories**
+2. Add `https://github.com/maozheng92/iclick_bestjoy` as category **Integration**
+3. Find **iCLICK X** in HACS and download a release (not the default branch)
+4. Restart Home Assistant
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=maozheng92&repository=iclick_bestjoy&category=integration)
+
+### Method 2: Manual install via [Filebrowser](https://github.com/alexbelgium/hassio-addons/tree/master/filebrowser) / [Samba](https://github.com/home-assistant/addons/list)
+
+Download and copy the `custom_components/iclick` folder to `config/custom_components` in your Home Assistant.
 
 ## Configuration
 
