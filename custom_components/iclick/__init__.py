@@ -44,17 +44,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     device_map = {}
     
     for device_info in device_data:  # 正确使用已定义的device_data
+        device_name = device_info.get(DATA_DEVICE_INFO_NAME) or device_info.get("sid")
+        if not device_name:
+            _LOGGER.warning("Skipping device without name: %s", device_info)
+            continue
+
         device = device_registry.async_get_or_create(
             config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, f"{device_info['device_name']}-{entry.entry_id}")},
+            identifiers={(DOMAIN, f"{device_name}-{entry.entry_id}")},
             manufacturer="iCLICK",
-            name=device_info[DATA_DEVICE_INFO_NAME],
-            model=device_info.get('device_type', 'Unknown'),
+            name=device_name,
+            model=device_info.get('device_type') or 'Unknown',
             via_device=(DOMAIN, entry.data[CONF_MAC]), # 表示当前设备是通过某个 “父设备”（如网关）连接的（即 “子设备”）。
-            suggested_area=device_info.get('room_name', entry.data[CONF_AREA]), # 建议的设备所在区域（如 “客厅”）
+            suggested_area=device_info.get('room_name') or entry.data[CONF_AREA], # 建议的设备所在区域（如 “客厅”）
         )
-        device_map[device_info[DATA_DEVICE_INFO_NAME]] = device.id
-        _LOGGER.debug(f"iCLICK API __init__ create device Name>ID : {device_info[DATA_DEVICE_INFO_NAME]} > {device.id}#{device_info['sid']}")
+        device_map[device_name] = device.id
+        _LOGGER.debug(f"iCLICK API __init__ create device Name>ID : {device_name} > {device.id}#{device_info.get('sid')}")
     
     # 3. 存储数据
     hass.data[DOMAIN][entry.entry_id] = {
@@ -112,10 +117,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """卸载配置"""
-    client = hass.data[DOMAIN].pop(entry.entry_id)
-    await client._async_close()
-    
+    domain_data = hass.data[DOMAIN].pop(entry.entry_id, None)
+    if domain_data:
+        client = domain_data.get(DATA_IP_DEVICE_CLIENT)
+        if client is not None:
+            await client._async_close()
+
     # 卸载实体平台
     await hass.config_entries.async_forward_entry_unload(entry, "button")
-    
+
     return True

@@ -23,7 +23,11 @@ async def async_setup_entry(
     device_mac = entry.data[CONF_MAC]
     entities = []
     for device_info in device_data:
-        device_name = device_info[DATA_DEVICE_INFO_NAME]
+        device_name = device_info.get(DATA_DEVICE_INFO_NAME) or device_info.get("sid")
+        if not device_name:
+            _LOGGER.warning("Skipping device without name: %s", device_info)
+            continue
+
         device_id = device_map.get(device_name)
         _LOGGER.debug(f"iCLICK API prepare IclickButtonEntities for device {device_name}#{device_id}")
         if not device_id:
