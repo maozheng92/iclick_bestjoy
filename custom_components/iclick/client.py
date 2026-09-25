@@ -20,6 +20,7 @@ class BestjoyClient:
         # 异步控制
         self._lock = asyncio.Lock()
         self._heartbeat_task = None
+        self._reconnect_task = None
         # 重连策略
         self._reconnect_attempts = 0
         self._max_retries = MAX_RECONNECT_RETRIES          # 最大自动重试次数
@@ -42,12 +43,12 @@ class BestjoyClient:
         finally:
             await self._async_close()
 
-    async def async_connect(self):
-        """增强版连接方法"""
+    async def async_connect(self) -> bool:
+        """建立连接。失败时只返回 False，由重连循环决定是否再试。"""
         async with self._lock:
-            if self._connection_ready: 
-                return
-                
+            if self._connection_ready:
+                return True
+
             try:
                 # 等待网关初始化完成
                 await asyncio.sleep(5)
@@ -60,14 +61,17 @@ class BestjoyClient:
                 _LOGGER.info(f"API try open_connection success")
                 # 启动心跳任务
                 self._heartbeat_task = asyncio.create_task(
-                    self._start_heartbeat(), 
+                    self._start_heartbeat(),
                     name=f"iclick_heartbeat_{self.host}"  # 增加主机标识
                 )
                 self._connection_ready = True
+                self._reconnect_attempts = 0
                 _LOGGER.info("Connection established")
+                return True
             except Exception as e:
                 _LOGGER.error(f"Connection failed: {str(e)}")
-                await self._trigger_recovery()
+                self._connection_ready = False
+                return False
 
     async def _start_heartbeat(self):
         """智能心跳任务"""
@@ -79,7 +83,9 @@ class BestjoyClient:
                     await asyncio.sleep(60)
                 except Exception as e:
                     _LOGGER.error(f"Heartbeat error: {str(e)}")
-                    await self._trigger_recovery()
+                    self._connection_ready = False
+                    # 不要在心跳任务里 await 重连：重连会关闭并等待本任务。
+                    self._schedule_reconnect()
                     break
         except asyncio.CancelledError:
             _LOGGER.debug("Heartbeat cancelled")
@@ -90,6 +96,8 @@ class BestjoyClient:
             if not self._connection_ready:
                 _LOGGER.warning(f"Hub {self.hub_id} 连接未就绪（尝试 {attempt+1}/3）")
                 await self.async_reconnect()
+                if not self._connection_ready:
+                    break
                 continue
             try:
                 # 直接发送原始数据（不进行协议封装）
@@ -100,30 +108,55 @@ class BestjoyClient:
                     return
             except Exception as e:
                 _LOGGER.error(f"Hub {self.hub_id} 发送失败：{str(e)}")
-                await self._trigger_recovery()
+                self._connection_ready = False
+                await self.async_reconnect()
         _LOGGER.error(f"Hub {self.hub_id} 所有发送尝试均失败")
         await self._hard_reset()
 
-    async def async_reconnect(self):
-        """增强版重连逻辑"""
+    def _schedule_reconnect(self) -> None:
+        """保证同一网关只有一个重连任务。"""
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(
+            self._reconnect_loop(),
+            name=f"iclick_reconnect_{self.hub_id}",
+        )
+
+    async def async_reconnect(self) -> None:
+        """等待当前重连结束。心跳任务只调度，不在这里等待。"""
+        current = asyncio.current_task()
+        if self._reconnect_task and not self._reconnect_task.done():
+            if self._reconnect_task is current:
+                return
+            await self._reconnect_task
+            return
+        self._schedule_reconnect()
+        if self._reconnect_task is not current:
+            await self._reconnect_task
+
+    async def _reconnect_loop(self) -> None:
+        """按次数退避重连。连接失败会计次，而不是每次都从 1/5 重新开始。"""
         self._connection_ready = False
         await self._async_close()
-        
+
         while self._reconnect_attempts < self._max_retries:
             delay = self._calc_retry_delay()
-            _LOGGER.warning(f"Reconnect attempt {self._reconnect_attempts+1}/{self._max_retries}, delay={delay}")
-            
+            attempt = self._reconnect_attempts + 1
+            _LOGGER.warning(
+                f"Hub {self.hub_id} reconnect attempt {attempt}/{self._max_retries}, delay={delay:.1f}"
+            )
             try:
                 await asyncio.sleep(delay)
-                await self.async_connect()
-                if self._connection_ready:
-                    self._reconnect_attempts = 0
+                if await self.async_connect():
                     return
             except Exception as e:
-                self._reconnect_attempts += 1
                 _LOGGER.error(f"Reconnect error: {str(e)}")
-                
-        await self._hard_reset()  # 达到最大重试次数触发硬重置
+            self._reconnect_attempts = attempt
+
+        _LOGGER.error(
+            f"Hub {self.hub_id} reconnect failed after {self._max_retries} attempts"
+        )
+        await self._hard_reset()
 
     def _calc_retry_delay(self) -> float:
         """计算退避时间（含随机抖动）"""
@@ -133,23 +166,10 @@ class BestjoyClient:
         )
         return base_delay + random.uniform(0, 2)
 
-    async def _trigger_recovery(self):
-        """启动恢复流程"""
-        self._connection_ready = False
-        if self._reconnect_attempts >= self._max_retries:
-            await self._hard_reset()
-        else:
-            await self.async_reconnect()
-
     async def _hard_reset(self):
-        """深度重置（模拟重启效果）"""
-        _LOGGER.warning("Performing hard reset")
+        """只重置当前网关，再尝试连接一次。"""
+        _LOGGER.warning(f"Hub {self.hub_id} performing hard reset")
         await self._async_close()
-        # 清理所有残留任务
-        for task in asyncio.all_tasks():
-            if task.get_name().startswith("iclick"):
-                task.cancel()
-        # 重置所有状态
         self._reconnect_attempts = 0
         self._connection_ready = False
         await asyncio.sleep(1)  # 等待资源释放
@@ -157,15 +177,15 @@ class BestjoyClient:
 
     async def _async_close(self):
         """原子化关闭操作"""
-        # 关闭心跳任务
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
+        # 关闭心跳任务。重连若由心跳触发，不能等待当前任务自己结束。
+        heartbeat = self._heartbeat_task
+        self._heartbeat_task = None
+        if heartbeat and not heartbeat.done() and heartbeat is not asyncio.current_task():
+            heartbeat.cancel()
             try:
-                await self._heartbeat_task
+                await heartbeat
             except asyncio.CancelledError:
                 pass
-            finally:
-                self._heartbeat_task = None
                 
         # 关闭网络连接
         if self._writer:
