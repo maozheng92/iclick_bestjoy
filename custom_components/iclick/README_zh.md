@@ -12,7 +12,16 @@ iCLICK LFO 小飞碟网关是一个可以接收homeassistant的TCP指令，转�
 > - Core $\geq$ 2024.4.4
 > - Operating System $\geq$ 13.0
 
-### 方法 1：通过[Filebrower](https://github.com/alexbelgium/hassio-addons/tree/master/filebrowser)或 [Samba](https://github.com/home-assistant/addons/tree/master/samba) 手动安装
+### 方法 1：通过 HACS 安装
+
+1. 打开 **HACS** → **集成** → 右上角菜单（⋮）→ **自定义仓库**
+2. 添加仓库地址 `https://github.com/maozheng92/iclick_bestjoy`，类别选择 **Integration**
+3. 在 HACS 中找到 **iCLICK X**，下载 **Release** 版本（不要选择默认分支）
+4. 重启 Home Assistant
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=maozheng92&repository=iclick_bestjoy&category=integration)
+
+### 方法 2：通过 [Filebrowser](https://github.com/alexbelgium/hassio-addons/tree/master/filebrowser) 或 [Samba](https://github.com/home-assistant/addons/tree/master/samba) 手动安装
 
 下载并将 `custom_components/iclick` 文件夹复制到 Home Assistant 的 `config/custom_components` 文件夹下。
 
