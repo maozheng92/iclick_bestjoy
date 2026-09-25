@@ -3,15 +3,29 @@ import asyncio
 import logging
 import random
 
-from .const import HEARTBEAT_INTERVAL, MAX_RECONNECT_RETRIES, BASE_RECONNECT_DELAY, MAX_RECONNECT_DELAY
+from .const import (
+    HEARTBEAT_INTERVAL, MAX_RECONNECT_RETRIES, BASE_RECONNECT_DELAY,
+    MAX_RECONNECT_DELAY, DATA_IP_INFO,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 class BestjoyClient:
-    def __init__(self, host: str, port: int, hub_id: str):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        hub_id: str,
+        account: str | None = None,
+        password: str | None = None,
+        on_host_change=None,
+    ):
         self.host = host
         self.port = port
         self.hub_id = hub_id
+        self._account = account
+        self._password = password
+        self._on_host_change = on_host_change
         # 连接相关资源
         self._reader = None
         self._writer = None
@@ -50,9 +64,7 @@ class BestjoyClient:
                 return True
 
             try:
-                # 等待网关初始化完成
-                await asyncio.sleep(5)
-                # 建立新连接
+                # 建立新连接。不要在这里先睡几秒，否则按钮服务会在连上之前超时。
                 _LOGGER.info(f"API try open_connection  {self.host}:{self.port}")
                 self._reader, self._writer = await asyncio.wait_for(
                     asyncio.open_connection(self.host, self.port),
@@ -90,28 +102,67 @@ class BestjoyClient:
         except asyncio.CancelledError:
             _LOGGER.debug("Heartbeat cancelled")
 
-    async def async_send_command(self, data: str):  # 改为直接接收data字符串
+    async def ensure_connected(self) -> bool:
+        """连上当前地址；失败时向云端要一次新 IP 再试。"""
+        if self._connection_ready and self._writer is not None:
+            return True
+        if await self.async_connect():
+            return True
+        if await self._refresh_host_from_cloud():
+            return await self.async_connect()
+        _LOGGER.error(
+            "Hub %s 无法控制: %s:%s 连接失败",
+            self.hub_id,
+            self.host,
+            self.port,
+        )
+        return False
+
+    async def _refresh_host_from_cloud(self) -> bool:
+        """网关 DHCP 换地址后，用云端记录的 IP 替换已保存的地址。"""
+        if not self._account or not self._password:
+            return False
+        from .config_flow import async_get_device_data
+
+        result = await async_get_device_data(self._account, self._password, self.hub_id)
+        ip_info = result.get(DATA_IP_INFO) if isinstance(result, dict) else None
+        ip = ip_info.get("ip") if isinstance(ip_info, dict) else None
+        if not ip or ip == self.host:
+            _LOGGER.error(
+                "Hub %s 无法控制: %s:%s 不可达，云端没有新的 IP",
+                self.hub_id,
+                self.host,
+                self.port,
+            )
+            return False
+        old_host = self.host
+        self.host = ip
+        _LOGGER.warning("Hub %s IP changed %s -> %s", self.hub_id, old_host, ip)
+        if self._on_host_change is not None:
+            maybe = self._on_host_change(ip)
+            if asyncio.iscoroutine(maybe):
+                await maybe
+        return True
+
+    async def async_send_command(self, data: str) -> bool:
         """直接发送原始指令（不进行协议封装）"""
-        for attempt in range(3):  # <-- 错误发生位置
-            if not self._connection_ready:
-                _LOGGER.warning(f"Hub {self.hub_id} 连接未就绪（尝试 {attempt+1}/3）")
-                await self.async_reconnect()
-                if not self._connection_ready:
-                    break
-                continue
+        bytes_data = bytes.fromhex(data)
+        for _attempt in range(2):
+            if not await self.ensure_connected():
+                return False
             try:
-                # 直接发送原始数据（不进行协议封装）
-                bytes_data = bytes.fromhex(data)
                 async with self._lock:
+                    if self._writer is None:
+                        raise ConnectionError("not connected")
                     self._writer.write(bytes_data)
                     await asyncio.wait_for(self._writer.drain(), timeout=5)
-                    return
+                    return True
             except Exception as e:
                 _LOGGER.error(f"Hub {self.hub_id} 发送失败：{str(e)}")
                 self._connection_ready = False
-                await self.async_reconnect()
-        _LOGGER.error(f"Hub {self.hub_id} 所有发送尝试均失败")
-        await self._hard_reset()
+                await self._async_close()
+        _LOGGER.error(f"Hub {self.hub_id} 无法控制: 发送失败")
+        return False
 
     def _schedule_reconnect(self) -> None:
         """保证同一网关只有一个重连任务。"""

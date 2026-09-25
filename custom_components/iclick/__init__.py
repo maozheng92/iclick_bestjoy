@@ -5,12 +5,13 @@ import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector  # 新增导入
 from .const import (
     DOMAIN, CONF_HOST, DEFAULT_PORT, CONF_PORT, CONF_MAC,
-    CONF_AREA, DATA_DEVICE_DATA, DATA_DEVICE_DATA_MAP, DATA_IP_DEVICE_CLIENT,
-    DATA_DEVICE_INFO_NAME, DATA_GATEWAY_DEVICE_ID
+    CONF_AREA, CONF_ACCOUNT, CONF_PASSWORD, DATA_DEVICE_DATA, DATA_DEVICE_DATA_MAP,
+    DATA_IP_DEVICE_CLIENT, DATA_DEVICE_INFO_NAME, DATA_GATEWAY_DEVICE_ID
 )
 
 # Core 2026.8 deprecated via_device=(domain, identifier). Older cores reject
@@ -36,11 +37,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     
     from .client import BestjoyClient
+
+    async def _persist_host(ip: str) -> None:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_HOST: ip}
+        )
+
     client = BestjoyClient(
         entry.data[CONF_HOST],
         entry.data.get(CONF_PORT, DEFAULT_PORT),
-        entry.data[CONF_MAC]
+        entry.data[CONF_MAC],
+        account=entry.data.get(CONF_ACCOUNT),
+        password=entry.data.get(CONF_PASSWORD),
+        on_host_change=_persist_host,
     )
+    if hasattr(entry, "async_create_background_task"):
+        entry.async_create_background_task(
+            hass,
+            client.ensure_connected(),
+            name=f"iclick_connect_{entry.data[CONF_MAC]}",
+        )
+    else:
+        hass.async_create_task(client.ensure_connected())
 
     # 1. 注册网关设备
     device_registry = dr.async_get(hass)
@@ -113,9 +131,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         # 3. 调用方法
         try:
-            await target_client.async_send_command(raw_data)
+            sent = await target_client.async_send_command(raw_data)
         except Exception as e:
             _LOGGER.error(f"Command sending failed: {str(e)}")
+            raise HomeAssistantError(
+                f"iCLICK hub {target_client.host}:{target_client.port} 无法控制"
+            ) from e
+        if not sent:
+            raise HomeAssistantError(
+                f"iCLICK hub {target_client.host}:{target_client.port} 无法控制"
+            )
 
     if not hass.services.has_service(DOMAIN, "send_command"):
         hass.services.async_register(
