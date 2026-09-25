@@ -1,4 +1,5 @@
 """_init_.py of an iClick Gateway."""
+import inspect
 import logging
 import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
@@ -9,8 +10,23 @@ from homeassistant.helpers import selector  # 新增导入
 from .const import (
     DOMAIN, CONF_HOST, DEFAULT_PORT, CONF_PORT, CONF_MAC,
     CONF_AREA, DATA_DEVICE_DATA, DATA_DEVICE_DATA_MAP, DATA_IP_DEVICE_CLIENT,
-    DATA_DEVICE_INFO_NAME
+    DATA_DEVICE_INFO_NAME, DATA_GATEWAY_DEVICE_ID
 )
+
+# Core 2026.8 deprecated via_device=(domain, identifier). Older cores reject
+# via_device_id, so pick the argument this install actually accepts.
+_ACCEPTS_VIA_DEVICE_ID = "via_device_id" in inspect.signature(
+    dr.DeviceRegistry.async_get_or_create
+).parameters
+
+
+def via_device_link(
+    device_id: str, identifier: tuple[str, str]
+) -> dict[str, str | tuple[str, str]]:
+    """Parent-device link for async_get_or_create and DeviceInfo."""
+    if _ACCEPTS_VIA_DEVICE_ID:
+        return {"via_device_id": device_id}
+    return {"via_device": identifier}
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,7 +71,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             manufacturer="iCLICK",
             name=device_name,
             model=device_info.get('device_type') or 'Unknown',
-            via_device=(DOMAIN, entry.data[CONF_MAC]), # 表示当前设备是通过某个 “父设备”（如网关）连接的（即 “子设备”）。
+            # 子设备通过网关连接。via_device_id 是网关在设备注册表中的 id。
+            **via_device_link(gateway_device.id, (DOMAIN, entry.data[CONF_MAC])),
             suggested_area=device_info.get('room_name') or entry.data[CONF_AREA], # 建议的设备所在区域（如 “客厅”）
         )
         device_map[device_name] = device.id
@@ -65,7 +82,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         DATA_IP_DEVICE_CLIENT: client,
         DATA_DEVICE_DATA_MAP: device_map,
-        DATA_DEVICE_DATA: device_data  # 存储以备后用
+        DATA_DEVICE_DATA: device_data,  # 存储以备后用
+        DATA_GATEWAY_DEVICE_ID: gateway_device.id,
     }
     
     # 4. 加载按钮平台

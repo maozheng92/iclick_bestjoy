@@ -4,9 +4,12 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
-from .const import DOMAIN, DATA_DEVICE_DATA, DATA_DEVICE_DATA_MAP, DATA_IP_DEVICE_CLIENT, DATA_DEVICE_INFO_NAME, CONF_MAC
+from . import via_device_link
+from .const import (
+    DOMAIN, DATA_DEVICE_DATA, DATA_DEVICE_DATA_MAP, DATA_DEVICE_INFO_NAME,
+    DATA_GATEWAY_DEVICE_ID, CONF_MAC,
+)
 from homeassistant.util import slugify
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,6 +24,7 @@ async def async_setup_entry(
     device_map = domain_data[DATA_DEVICE_DATA_MAP]
     device_data = domain_data[DATA_DEVICE_DATA]
     device_mac = entry.data[CONF_MAC]
+    gateway_device_id = domain_data[DATA_GATEWAY_DEVICE_ID]
     entities = []
     for device_info in device_data:
         device_name = device_info.get(DATA_DEVICE_INFO_NAME) or device_info.get("sid")
@@ -44,7 +48,8 @@ async def async_setup_entry(
                     device_id=device_id,
                     device_name=device_name,
                     entry_id=entry.entry_id,
-                    device_mac=device_mac
+                    device_mac=device_mac,
+                    gateway_device_id=gateway_device_id,
                 )
             )
     
@@ -62,6 +67,7 @@ class IclickButtonEntity(ButtonEntity):
         device_name: str,
         entry_id: str,
         device_mac: str,
+        gateway_device_id: str,
     ) -> None:
 
         # 利用 HA 自带的 slugify 处理中文，生成与系统一致的 object_id
@@ -73,6 +79,7 @@ class IclickButtonEntity(ButtonEntity):
         self._entry_id = entry_id
         self._device_name = device_name
         self._device_mac = device_mac
+        self._gateway_device_id = gateway_device_id
         # Gen entity_id
         self.entity_id = f"button.iclick_{device_id}_{key_index}_{processed_key_name}"
         # Set entity attr
@@ -84,7 +91,8 @@ class IclickButtonEntity(ButtonEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{device_name}-{entry_id}")}, # button 实体将被绑定到对应的子设备上。
             name=device_name,
-            via_device=(DOMAIN, self._device_mac) # 通过 via_device 间接关联网关。
+            # 通过网关设备 id 间接关联网关，避免已弃用的 via_device 标识元组。
+            **via_device_link(self._gateway_device_id, (DOMAIN, self._device_mac)),
         )
     
     async def async_press(self) -> None:
