@@ -14,6 +14,7 @@ DATA_IP_INFO = "ip_info"            # 网关IP信息
 DATA_DEVICE_DATA = "device_data"            # 设备信息
 DATA_DEVICE_DATA_MAP = "device_map"            # 设备信息
 DATA_IP_DEVICE_CLIENT = "ip_client"            # IP设备Client
+DATA_GATEWAY_DEVICE_ID = "gateway_device_id"    # 网关在设备注册表中的 id
 DATA_DEVICE_INFO_NAME = "device_name"          # 设备名称
 
 ERROR_INVALID_IP = "invalid_ip"

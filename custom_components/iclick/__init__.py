@@ -1,16 +1,33 @@
 """_init_.py of an iClick Gateway."""
+import inspect
 import logging
 import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector  # 新增导入
 from .const import (
     DOMAIN, CONF_HOST, DEFAULT_PORT, CONF_PORT, CONF_MAC,
-    CONF_AREA, DATA_DEVICE_DATA, DATA_DEVICE_DATA_MAP, DATA_IP_DEVICE_CLIENT,
-    DATA_DEVICE_INFO_NAME
+    CONF_AREA, CONF_ACCOUNT, CONF_PASSWORD, DATA_DEVICE_DATA, DATA_DEVICE_DATA_MAP,
+    DATA_IP_DEVICE_CLIENT, DATA_DEVICE_INFO_NAME, DATA_GATEWAY_DEVICE_ID
 )
+
+# Core 2026.8 deprecated via_device=(domain, identifier). Older cores reject
+# via_device_id, so pick the argument this install actually accepts.
+_ACCEPTS_VIA_DEVICE_ID = "via_device_id" in inspect.signature(
+    dr.DeviceRegistry.async_get_or_create
+).parameters
+
+
+def via_device_link(
+    device_id: str, identifier: tuple[str, str]
+) -> dict[str, str | tuple[str, str]]:
+    """Parent-device link for async_get_or_create and DeviceInfo."""
+    if _ACCEPTS_VIA_DEVICE_ID:
+        return {"via_device_id": device_id}
+    return {"via_device": identifier}
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,11 +37,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     
     from .client import BestjoyClient
+
+    async def _persist_host(ip: str) -> None:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_HOST: ip},
+            title=f"iCLICK_Hub_{entry.data[CONF_MAC]}@{ip}",
+        )
+        domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
+        device_id = domain_data.get(DATA_GATEWAY_DEVICE_ID)
+        if device_id:
+            dr.async_get(hass).async_update_device(
+                device_id, configuration_url=f"http://{ip}"
+            )
+
     client = BestjoyClient(
         entry.data[CONF_HOST],
         entry.data.get(CONF_PORT, DEFAULT_PORT),
-        entry.data[CONF_MAC]
+        entry.data[CONF_MAC],
+        account=entry.data.get(CONF_ACCOUNT),
+        password=entry.data.get(CONF_PASSWORD),
+        on_host_change=_persist_host,
     )
+    if hasattr(entry, "async_create_background_task"):
+        entry.async_create_background_task(
+            hass,
+            client.ensure_connected(),
+            name=f"iclick_connect_{entry.data[CONF_MAC]}",
+        )
+    else:
+        hass.async_create_task(client.ensure_connected())
 
     # 1. 注册网关设备
     device_registry = dr.async_get(hass)
@@ -35,7 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name=f"iCLICK Gateway - {entry.data[CONF_MAC]}",
         model="iCLICK Gateway",
         sw_version="1.0",
-        configuration_url=f"http://{entry.data[CONF_HOST]}",
+        configuration_url=f"http://{client.host}",
         suggested_area=entry.data[CONF_AREA],
     )
     
@@ -55,7 +97,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             manufacturer="iCLICK",
             name=device_name,
             model=device_info.get('device_type') or 'Unknown',
-            via_device=(DOMAIN, entry.data[CONF_MAC]), # 表示当前设备是通过某个 “父设备”（如网关）连接的（即 “子设备”）。
+            # 子设备通过网关连接。via_device_id 是网关在设备注册表中的 id。
+            **via_device_link(gateway_device.id, (DOMAIN, entry.data[CONF_MAC])),
             suggested_area=device_info.get('room_name') or entry.data[CONF_AREA], # 建议的设备所在区域（如 “客厅”）
         )
         device_map[device_name] = device.id
@@ -65,7 +108,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         DATA_IP_DEVICE_CLIENT: client,
         DATA_DEVICE_DATA_MAP: device_map,
-        DATA_DEVICE_DATA: device_data  # 存储以备后用
+        DATA_DEVICE_DATA: device_data,  # 存储以备后用
+        DATA_GATEWAY_DEVICE_ID: gateway_device.id,
     }
     
     # 4. 加载按钮平台
@@ -95,9 +139,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         # 3. 调用方法
         try:
-            await target_client.async_send_command(raw_data)
+            sent = await target_client.async_send_command(raw_data)
         except Exception as e:
             _LOGGER.error(f"Command sending failed: {str(e)}")
+            raise HomeAssistantError(
+                f"iCLICK hub {target_client.host}:{target_client.port} 无法控制"
+            ) from e
+        if not sent:
+            raise HomeAssistantError(
+                f"iCLICK hub {target_client.host}:{target_client.port} 无法控制"
+            )
 
     if not hass.services.has_service(DOMAIN, "send_command"):
         hass.services.async_register(

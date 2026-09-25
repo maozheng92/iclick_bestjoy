@@ -40,7 +40,7 @@ class BestjoyLoginConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         errors["base"] = "hub_id_already_used"
                     else:
                         # 从云端获取设备数据
-                        device_data = await self._get_device_data(
+                        device_data = await async_get_device_data(
                             user_input[CONF_ACCOUNT],
                             user_input[CONF_PASSWORD],
                             user_input[CONF_MAC]
@@ -117,69 +117,69 @@ class BestjoyLoginConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
     
-    async def _get_device_data(self, account: str, password: str, mac: str) -> dict:
-        """从云端API获取设备数据"""
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "getdata_v2",
-            "params": [account, password, mac],
-            "id": 1,
-        }
+async def async_get_device_data(account: str, password: str, mac: str) -> dict:
+    """从云端API获取设备数据"""
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "getdata_v2",
+        "params": [account, password, mac],
+        "id": 1,
+    }
 
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            try:
-                async with session.post(API_URL, json=payload) as response:
-                    body = await response.text()
-                    if response.status != 200:
-                        _LOGGER.error(
-                            "iCLICK API request failed with status %s: %s",
-                            response.status,
-                            body[:500],
-                        )
-                        return {}
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.post(API_URL, json=payload) as response:
+                body = await response.text()
+                if response.status != 200:
+                    _LOGGER.error(
+                        "iCLICK API request failed with status %s: %s",
+                        response.status,
+                        body[:500],
+                    )
+                    return {}
 
-                    if not body or not body.strip():
-                        _LOGGER.error(
-                            "iCLICK API returned empty body (status %s)",
-                            response.status,
-                        )
-                        return {}
+                if not body or not body.strip():
+                    _LOGGER.error(
+                        "iCLICK API returned empty body (status %s)",
+                        response.status,
+                    )
+                    return {}
 
-                    try:
-                        data = json.loads(body)
-                    except json.JSONDecodeError as err:
-                        _LOGGER.error(
-                            "iCLICK API returned invalid JSON: %s; body=%s",
-                            err,
-                            body[:500],
-                        )
-                        return {}
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError as err:
+                    _LOGGER.error(
+                        "iCLICK API returned invalid JSON: %s; body=%s",
+                        err,
+                        body[:500],
+                    )
+                    return {}
 
-                    # 云端偶发返回 JSON null，或 result 显式为 null
-                    if not isinstance(data, dict):
-                        _LOGGER.error(
-                            "iCLICK API response is not an object: %r",
-                            data,
-                        )
-                        return {}
+                # 云端偶发返回 JSON null，或 result 显式为 null
+                if not isinstance(data, dict):
+                    _LOGGER.error(
+                        "iCLICK API response is not an object: %r",
+                        data,
+                    )
+                    return {}
 
-                    if data.get("error"):
-                        _LOGGER.error("iCLICK API returned error: %s", data["error"])
-                        return {}
+                if data.get("error"):
+                    _LOGGER.error("iCLICK API returned error: %s", data["error"])
+                    return {}
 
-                    result = data.get("result")
-                    if not isinstance(result, dict):
-                        _LOGGER.error(
-                            "iCLICK API missing/invalid result: %r (full=%s)",
-                            result,
-                            body[:500],
-                        )
-                        return {}
+                result = data.get("result")
+                if not isinstance(result, dict):
+                    _LOGGER.error(
+                        "iCLICK API missing/invalid result: %r (full=%s)",
+                        result,
+                        body[:500],
+                    )
+                    return {}
 
-                    _LOGGER.debug("iCLICK API getdata_v2 result keys: %s", list(result))
-                    return result
-            except Exception as e:
-                _LOGGER.error("iCLICK API request exception: %s", e)
+                _LOGGER.debug("iCLICK API getdata_v2 result keys: %s", list(result))
+                return result
+        except Exception as e:
+            _LOGGER.error("iCLICK API request exception: %s", e)
 
-        return {}
+    return {}
