@@ -103,13 +103,12 @@ class BestjoyClient:
             _LOGGER.debug("Heartbeat cancelled")
 
     async def ensure_connected(self) -> bool:
-        """连上当前地址；失败时向云端要一次新 IP 再试。"""
+        """先用云端里的当前 IP，再连接。DHCP 改地址后不再拨旧 IP。"""
         if self._connection_ready and self._writer is not None:
             return True
+        await self._refresh_host_from_cloud()
         if await self.async_connect():
             return True
-        if await self._refresh_host_from_cloud():
-            return await self.async_connect()
         _LOGGER.error(
             "Hub %s 无法控制: %s:%s 连接失败",
             self.hub_id,
@@ -128,12 +127,6 @@ class BestjoyClient:
         ip_info = result.get(DATA_IP_INFO) if isinstance(result, dict) else None
         ip = ip_info.get("ip") if isinstance(ip_info, dict) else None
         if not ip or ip == self.host:
-            _LOGGER.error(
-                "Hub %s 无法控制: %s:%s 不可达，云端没有新的 IP",
-                self.hub_id,
-                self.host,
-                self.port,
-            )
             return False
         old_host = self.host
         self.host = ip
@@ -189,6 +182,7 @@ class BestjoyClient:
         """按次数退避重连。连接失败会计次，而不是每次都从 1/5 重新开始。"""
         self._connection_ready = False
         await self._async_close()
+        await self._refresh_host_from_cloud()
 
         while self._reconnect_attempts < self._max_retries:
             delay = self._calc_retry_delay()

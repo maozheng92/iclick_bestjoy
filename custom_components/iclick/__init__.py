@@ -40,8 +40,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _persist_host(ip: str) -> None:
         hass.config_entries.async_update_entry(
-            entry, data={**entry.data, CONF_HOST: ip}
+            entry,
+            data={**entry.data, CONF_HOST: ip},
+            title=f"iCLICK_Hub_{entry.data[CONF_MAC]}@{ip}",
         )
+        domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
+        device_id = domain_data.get(DATA_GATEWAY_DEVICE_ID)
+        if device_id:
+            dr.async_get(hass).async_update_device(
+                device_id, configuration_url=f"http://{ip}"
+            )
 
     client = BestjoyClient(
         entry.data[CONF_HOST],
@@ -69,7 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name=f"iCLICK Gateway - {entry.data[CONF_MAC]}",
         model="iCLICK Gateway",
         sw_version="1.0",
-        configuration_url=f"http://{entry.data[CONF_HOST]}",
+        configuration_url=f"http://{client.host}",
         suggested_area=entry.data[CONF_AREA],
     )
     
