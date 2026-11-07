@@ -17,8 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 
 class BestjoyLoginConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
-    
+
     async def async_step_user(self, user_input: dict | None = None) -> FlowResult:
         """处理用户首次配置（显示表单）"""
         # 延迟导入避免阻塞事件循环
